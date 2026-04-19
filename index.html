@@ -654,10 +654,14 @@ async function startFollow() {
     map, position: { lat: 0, lng: 0 }, title: 'You are here', content: dot,
   });
 
+  let lastInteraction = 0;
+  map.addListener('dragstart',    () => lastInteraction = Date.now());
+  map.addListener('zoom_changed', () => lastInteraction = Date.now());
+
   watchId = navigator.geolocation.watchPosition(pos => {
     const { latitude: lat, longitude: lng } = pos.coords;
     meMarker.position = { lat, lng };
-    map.panTo({ lat, lng });
+    if (Date.now() - lastInteraction > 3000) map.panTo({ lat, lng });
   }, err => {
     alert('GPS error: ' + err.message);
     stopFollow();
