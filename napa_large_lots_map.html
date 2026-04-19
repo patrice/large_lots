@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Napa Large Lots — Downtown</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; flex-direction: column; height: 100vh; }
+
+    #map { flex: 1; min-height: 0; }
+
+    /* ── Street View panel ───────────────────────────────────────── */
+    #sv-panel {
+      height: 0; overflow: hidden; background: #1a1a2e;
+      transition: height .3s ease; display: flex; flex-direction: column;
+      flex-shrink: 0; margin-right: 340px;
+    }
+    #sv-panel.open { height: 300px; }
+    #sv-resizer {
+      height: 6px; background: #1a1a2e; cursor: ns-resize; flex-shrink: 0;
+      display: none; align-items: center; justify-content: center;
+      margin-right: 340px;
+    }
+    #sv-resizer.visible { display: flex; }
+    #sv-resizer::after {
+      content: ''; width: 40px; height: 2px;
+      background: rgba(255,255,255,.35); border-radius: 2px;
+    }
+    #sv-bar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; background: #1a1a2e; flex-shrink: 0;
+    }
+    #sv-title { color: #fff; font-size: 12px; flex: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sv-tab {
+      font-size: 11px; padding: 4px 10px; border-radius: 4px; border: none;
+      cursor: pointer; font-weight: 600; white-space: nowrap;
+    }
+    .sv-tab.active  { background: #fff; color: #1a1a2e; }
+    .sv-tab:not(.active) { background: rgba(255,255,255,.18); color: #fff; }
+    #sv-close {
+      background: none; border: none; color: rgba(255,255,255,.6);
+      font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1;
+    }
+
+    /* ── Sidebar ──────────────────────────────────────────────────── */
+    #sidebar {
+      position: fixed; top: 0; right: 0; bottom: 0;
+      width: 340px; background: #fff;
+      box-shadow: -2px 0 12px rgba(0,0,0,.15);
+      z-index: 1000; display: flex; flex-direction: column;
+      transition: transform .25s ease;
+    }
+    #sidebar.hidden { transform: translateX(100%); }
+    #toggle-sidebar {
+      position: fixed; top: 12px; right: 12px; z-index: 1001;
+      background: #fff; border: none; border-radius: 6px;
+      padding: 8px 14px; cursor: pointer; font-size: 14px;
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    }
+    #sb-header {
+      padding: 16px; background: #1a1a2e; color: #fff;
+      font-size: 15px; font-weight: 600;
+    }
+    #sb-header span { font-size: 12px; font-weight: 400; opacity:.75; display:block; margin-top:2px; }
+    #filter-bar {
+      padding: 10px 12px; border-bottom: 1px solid #eee; background: #f8f8f8;
+    }
+    #filter-bar label { font-size: 12px; color: #555; }
+    #min-sqft { width: 100%; margin-top: 4px; }
+    #list-container { overflow-y: auto; flex: 1; }
+    .lot-item {
+      padding: 12px 14px; border-bottom: 1px solid #f0f0f0;
+      cursor: pointer; transition: background .15s;
+    }
+    .lot-item:hover, .lot-item.active { background: #eef4ff; }
+    .lot-addr { font-size: 13px; font-weight: 600; color: #1a1a2e; }
+    .lot-meta { font-size: 11px; color: #666; margin-top: 3px; line-height: 1.5; }
+    .lot-links { margin-top: 6px; display: flex; gap: 5px; flex-wrap: wrap; }
+    .lot-links a {
+      font-size: 11px; padding: 3px 7px; border-radius: 4px;
+      text-decoration: none; font-weight: 500; color: #fff;
+    }
+    @media (max-width: 600px) {
+      #sidebar {
+        top: auto; left: 0; right: 0; width: 100%;
+        height: 42vh; bottom: 0;
+        box-shadow: 0 -4px 16px rgba(0,0,0,.2);
+        transform: translateY(0);
+      }
+      #sidebar.hidden { transform: translateY(100%); }
+      #sb-header { padding: 8px 12px; font-size: 13px; }
+      #sb-header span { display: inline; margin: 0 0 0 6px; }
+      #filter-bar { padding: 6px 10px; }
+      #filter-bar label { font-size: 11px; }
+      .lot-item { padding: 7px 12px; display: flex; align-items: baseline; gap: 8px; }
+      .lot-addr { font-size: 12px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .lot-meta, .lot-links { display: none; }
+      .lot-sqft { font-size: 11px; color: #888; white-space: nowrap; flex-shrink: 0; }
+    }
+
+    /* ── Search bar ──────────────────────────────────────────────── */
+    #search-bar {
+      position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+      z-index: 1002; display: flex; gap: 0;
+      box-shadow: 0 2px 10px rgba(0,0,0,.3); border-radius: 8px; overflow: hidden;
+    }
+    #search-input {
+      width: 300px; padding: 10px 14px; border: none; outline: none;
+      font-size: 14px; font-family: inherit;
+    }
+    @media (max-width: 600px) {
+      #search-bar {
+        left: 12px; transform: none;
+        right: 80px; /* leave room for ☰ List button */
+      }
+      #search-input { width: 100%; font-size: 13px; padding: 9px 10px; }
+    }
+    #search-btn {
+      padding: 10px 14px; background: #1a1a2e; color: #fff;
+      border: none; cursor: pointer; font-size: 14px;
+    }
+    #search-btn:hover { background: #2d2d50; }
+
+    /* ── Legend ───────────────────────────────────────────────────── */
+    #legend {
+      position: fixed; bottom: 16px; left: 12px; z-index: 999;
+      background: rgba(255,255,255,.93); padding: 10px 14px;
+      border-radius: 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.15);
+      transition: bottom .3s ease;
+    }
+    #legend.panel-open { bottom: 316px; }
+    #legend h4 { font-size: 12px; margin-bottom: 6px; color: #333; }
+  </style>
+</head>
+<body>
+
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCXki_Yaimvt7k4E4U-7IH0DFV6ZI0GpP0&callback=initMap&v=weekly&libraries=marker,places" async defer></script>
+
+<div id="map"></div>
+
+<!-- Street View / Satellite panel -->
+<div id="sv-resizer"></div>
+<div id="sv-panel">
+  <div id="sv-bar">
+    <span id="sv-title">Click a parcel to open Street View</span>
+    <button class="sv-tab active" id="tab-sv"  onclick="switchTab('sv')">🚶 Street View</button>
+    <button id="sv-close" onclick="closePanel()">✕</button>
+  </div>
+  <div id="sv-content" style="flex:1;width:100%;position:relative"></div>
+</div>
+
+<div id="search-bar">
+  <input id="search-input" type="text" placeholder="Search address in Napa or Sonoma County…" />
+  <button id="search-btn" onclick="doSearch()">⌕</button>
+</div>
+<button id="toggle-sidebar" onclick="toggleSidebar()">☰ List</button>
+<div id="sidebar">
+  <div id="sb-header">
+    Napa &amp; Sonoma Large Lots
+    <span id="count-label">Loading…</span>
+    <span style="font-size:10px;opacity:.5;font-weight:400">Napa + Sonoma County data</span>
+  </div>
+  <div id="filter-bar">
+    <label>Min lot size (sq ft): <strong id="sqft-val">8,000</strong></label>
+    <input id="min-sqft" type="range" min="1000" max="50000" step="500" value="8000">
+  </div>
+  <div id="list-container"></div>
+</div>
+
+<div id="legend">
+  <h4>Lot Size</h4>
+  <div style="height:13px;border-radius:3px;border:1px solid rgba(0,0,0,.12);background:linear-gradient(to right,hsla(220,65%,52%,0.2),hsl(165,75%,46%),hsl(90,85%,43%),hsl(45,92%,46%),hsl(0,95%,40%));margin-bottom:5px"></div>
+  <div style="display:flex;justify-content:space-between;font-size:10px;color:#555">
+    <span>1k</span><span>8k</span><span>15k</span><span>23k</span><span>30k+ sqft</span>
+  </div>
+</div>
+
+<script>
+
+// ── County configs ────────────────────────────────────────────────
+const COUNTIES = [
+  {
+    id: 'napa',
+    name: 'Napa',
+    downtown: { lat: 38.2975, lng: -122.2869 },
+    url: 'https://services1.arcgis.com/Ko5rxt00spOfjMqj/arcgis/rest/services/Napa_County_Public_Parcels/FeatureServer/1/query',
+    outFields: 'FullSitusAddress1,Prcl_Size_SqFt,Acres,LandUseDescription,YearBuilt,BedroomsCount,Building_Size_SqFt,CurrentMarketLandValue,ASMT,Landuse1',
+    buildWhere(minSqft) {
+      const acres = (minSqft / 43560).toFixed(4);
+      return `(Prcl_Size_SqFt >= ${minSqft} OR (Prcl_Size_SqFt IS NULL AND Acres >= ${acres}))` +
+        ` AND (Landuse1 LIKE 'R%' OR LandUseDescription LIKE '%Residential%' OR LandUseDescription LIKE '%Single%' OR LandUseDescription LIKE '%RES%')`;
+    },
+    normalize(a) {
+      const sqft = a.Prcl_Size_SqFt || (a.Acres ? Math.round(a.Acres * 43560) : 0);
+      return {
+        _address: (a.FullSitusAddress1 || '').trim(),
+        _sqft: sqft, _acres: a.Acres,
+        _landUse: a.LandUseDescription, _yearBuilt: a.YearBuilt,
+        _beds: a.BedroomsCount, _buildingSqft: a.Building_Size_SqFt,
+        _landValue: a.CurrentMarketLandValue, _parcelId: a.ASMT, _county: 'Napa',
+        _countyUrl: a.ASMT ? `https://gis.napa.ca.gov/SQLReportGen/Report.ashx?ReportPath=/GIS+Reports/Parcel_Summary_Report&opts=ASMT%7C${a.ASMT}&DownGradeReport=1` : null,
+      };
+    },
+  },
+  {
+    id: 'sonoma',
+    name: 'Sonoma',
+    downtown: { lat: 38.4404, lng: -122.7141 },
+    url: 'https://socogis.sonomacounty.ca.gov/map/rest/services/AGCOMMPublic/Sonoma_County_Parcels/FeatureServer/0/query',
+    outFields: 'SitusFormatted1,LandSizeSqft,LandSizeAcres,UseCodeDescription,UseCode,BuildingPrimaryYearBuilt,BuildingPrimaryBedRooms,BuildingPrimarySize,Value601Land,APN',
+    buildWhere(minSqft) {
+      const acres = (minSqft / 43560).toFixed(4);
+      return `(LandSizeSqft >= ${minSqft} OR (LandSizeSqft IS NULL AND LandSizeAcres >= ${acres}))` +
+        ` AND (UseCodeDescription LIKE '%Resid%' OR UseCodeDescription LIKE '%Single%' OR UseCodeDescription LIKE '%Rural%' OR UseCodeDescription LIKE '%Mobile%')`;
+    },
+    normalize(a) {
+      const sqft = a.LandSizeSqft || (a.LandSizeAcres ? Math.round(a.LandSizeAcres * 43560) : 0);
+      return {
+        _address: (a.SitusFormatted1 || '').trim(),
+        _sqft: sqft, _acres: a.LandSizeAcres,
+        _landUse: a.UseCodeDescription, _yearBuilt: a.BuildingPrimaryYearBuilt,
+        _beds: a.BuildingPrimaryBedRooms, _buildingSqft: a.BuildingPrimarySize,
+        _landValue: a.Value601Land, _parcelId: a.APN, _county: 'Sonoma',
+        _countyUrl: a.APN ? `https://assessor.sonomacounty.ca.gov/SearchForProperty/PropertySearch?apn=${a.APN}` : null,
+      };
+    },
+  },
+];
+
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 3958.8, toR = Math.PI / 180;
+  const dLat = (lat2 - lat1) * toR, dLon = (lon2 - lon1) * toR;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*toR)*Math.cos(lat2*toR)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.asin(Math.sqrt(a));
+}
+
+let currentParcels = [], fetchTimer = null;
+
+async function fetchCounty(county, geometry, minSqft) {
+  const params = new URLSearchParams({
+    where: county.buildWhere(minSqft), geometry,
+    geometryType: 'esriGeometryEnvelope', spatialRel: 'esriSpatialRelIntersects',
+    inSR: '4326', outSR: '4326', returnGeometry: 'true',
+    outFields: county.outFields, resultRecordCount: '500', f: 'json',
+  });
+  const resp = await fetch(`${county.url}?${params}`);
+  const data = await resp.json();
+  if (data.error) throw new Error(`${county.name}: ${data.error.message}`);
+  return (data.features || []).map(f => {
+    const rings = f.geometry?.rings;
+    if (!rings) return null;
+    const ring = rings[0];
+    const lat = ring.reduce((s, p) => s + p[1], 0) / ring.length;
+    const lon = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+    const norm = county.normalize(f.attributes);
+    const dist = haversine(county.downtown.lat, county.downtown.lng, lat, lon);
+    return {
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: rings },
+      properties: { ...norm, _lat: lat, _lng: lon, _dist: dist.toFixed(2) },
+    };
+  }).filter(Boolean);
+}
+
+async function fetchViewport() {
+  if (!map) return;
+  const bounds = map.getBounds();
+  if (!bounds) return;
+
+  document.getElementById('count-label').textContent = 'Loading\u2026';
+  const sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+  const geometry = JSON.stringify({
+    xmin: sw.lng(), ymin: sw.lat(), xmax: ne.lng(), ymax: ne.lat(),
+    spatialReference: { wkid: 4326 },
+  });
+
+  try {
+    const results = await Promise.allSettled(COUNTIES.map(c => fetchCounty(c, geometry, currentFilter)));
+    const geojsonFeatures = results.flatMap((r, i) => {
+      if (r.status === 'rejected') { console.warn(`${COUNTIES[i].name} fetch failed:`, r.reason); return []; }
+      return r.value;
+    });
+
+    dataLayer.forEach(f => dataLayer.remove(f));
+    dataLayer.addGeoJson({ type: 'FeatureCollection', features: geojsonFeatures });
+    applyStyles();
+
+    currentParcels = geojsonFeatures.map(f => f.properties)
+      .sort((a, b) => (b._sqft || 0) - (a._sqft || 0));
+    buildList(currentFilter);
+  } catch (err) {
+    document.getElementById('count-label').textContent = 'Fetch error — check console';
+    console.error('fetchViewport:', err);
+  }
+}
+
+// ── URL helpers ───────────────────────────────────────────────────
+function zillowUrl(addr, county)   { return `https://www.zillow.com/homes/for_sale/${encodeURIComponent(addr + ' ' + (county||'') + ' CA')}_rb/`; }
+function redfinUrl(addr, county)   { return `https://www.redfin.com/search#location=${encodeURIComponent(addr + ', ' + (county||'') + ' County, CA')}&v=2`; }
+function realtorUrl(addr, county)  { return `https://www.realtor.com/realestateandhomes-search/${encodeURIComponent(addr + ' ' + (county||'') + ' County CA')}`; }
+function googleUrl(addr, county)   { return `https://www.google.com/search?q=${encodeURIComponent(addr + ' real estate ' + (county||'') + ' County CA')}`; }
+
+function fmt(n)    { return Number(n).toLocaleString(); }
+function dollar(n) { return n ? '$' + Number(n).toLocaleString() : '—'; }
+
+function lotStyle(sqft, visible) {
+  if (!visible) return {
+    fillColor: '#6b9fd4', fillOpacity: 0.03,
+    strokeColor: '#aaa', strokeWeight: 0.2, strokeOpacity: 0.15, zIndex: 0,
+  };
+  // t: 0 at 1k sqft → 1 at 50k+ sqft
+  const t = Math.min(1, Math.max(0, (sqft - 1000) / 29000));
+  const hue = Math.round(220 - t * 220); // blue(220) → red(0)
+  const sat = Math.round(65 + t * 30);   // 65% → 95%
+  const lit = Math.round(52 - t * 12);   // 52% → 40%
+  const opacity = 0.15 + t * 0.60;       // 0.15 → 0.75
+  return {
+    fillColor: `hsl(${hue},${sat}%,${lit}%)`,
+    fillOpacity: Math.round(opacity * 100) / 100,
+    strokeColor: '#ffffff',
+    strokeWeight: 0.3 + t * 1.2,
+    strokeOpacity: 0.2 + t * 0.6,
+    zIndex: Math.round(sqft),
+  };
+}
+
+// ── Street View panel ─────────────────────────────────────────────
+let _svLat = null, _svLon = null, _svAddr = '', _activeTab = 'sv';
+
+function openPanel(lat, lon, addr) {
+  _svLat = lat; _svLon = lon; _svAddr = addr;
+  document.getElementById('sv-title').textContent = addr;
+  document.getElementById('sv-panel').classList.add('open');
+  document.getElementById('sv-resizer').classList.add('visible');
+  document.getElementById('legend').classList.add('panel-open');
+  loadSvFrame();
+}
+function closePanel() {
+  document.getElementById('sv-panel').classList.remove('open');
+  document.getElementById('sv-resizer').classList.remove('visible');
+  document.getElementById('legend').classList.remove('panel-open');
+  document.getElementById('sv-content').innerHTML = '';
+  if (svMarker) { svMarker.map = null; svMarker = null; }
+  if (infoWindow) infoWindow.close();
+}
+
+function bearingTo(fromLat, fromLon, toLat, toLon) {
+  const dLon = (toLon - fromLon) * Math.PI / 180;
+  const la1  = fromLat * Math.PI / 180;
+  const la2  = toLat   * Math.PI / 180;
+  const y = Math.sin(dLon) * Math.cos(la2);
+  const x = Math.cos(la1) * Math.sin(la2) - Math.sin(la1) * Math.cos(la2) * Math.cos(dLon);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+}
+
+function placeMarker(lat, lon, addr) {
+  if (selectedMarker) selectedMarker.map = null;
+  const pin = document.createElement('div');
+  pin.style.cssText = `
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #facc15; border: 3px solid #1a1a2e;
+    box-shadow: 0 2px 6px rgba(0,0,0,.5);
+  `;
+  selectedMarker = new google.maps.marker.AdvancedMarkerElement({
+    map,
+    position: { lat, lng: lon },
+    title: addr,
+    content: pin,
+  });
+}
+
+function loadSvFrame() {
+  if (_svLat == null) return;
+  const container = document.getElementById('sv-content');
+  container.innerHTML = '';
+
+  const svc = new google.maps.StreetViewService();
+  svc.getPanorama(
+    { location: { lat: _svLat, lng: _svLon }, radius: 80, source: google.maps.StreetViewSource.OUTDOOR },
+    (data, status) => {
+      if (status === google.maps.StreetViewStatus.OK) {
+        const pLat = data.location.latLng.lat();
+        const pLon = data.location.latLng.lng();
+        const heading = Math.round(bearingTo(pLat, pLon, _svLat, _svLon));
+        if (svMarker) svMarker.map = null;
+        const svPin = document.createElement('div');
+        svPin.style.cssText = 'width:48px;height:48px;margin-bottom:-24px;';
+        svPin.innerHTML = `<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+          <g id="sv-arrow" transform="rotate(${heading}, 24, 24)">
+            <polygon points="24,2 34,20 14,20" fill="#60a5fa" fill-opacity="0.85" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>
+          </g>
+          <circle cx="24" cy="24" r="8" fill="#3b82f6" stroke="#fff" stroke-width="2.5"/>
+        </svg>`;
+        svMarker = new google.maps.marker.AdvancedMarkerElement({ map, position: { lat: pLat, lng: pLon }, title: 'Street View location', content: svPin });
+        const pano = new google.maps.StreetViewPanorama(container, {
+          pano: data.location.pano,
+          pov: { heading, pitch: 0 },
+          zoom: -1,
+          addressControl: false,
+          fullscreenControl: true,
+          motionTracking: false,
+          motionTrackingControl: false,
+        });
+        pano.addListener('position_changed', () => {
+          const pos = pano.getPosition();
+          if (svMarker && pos) svMarker.position = { lat: pos.lat(), lng: pos.lng() };
+        });
+        pano.addListener('pov_changed', () => {
+          const h = pano.getPov().heading;
+          const arrow = svPin.querySelector('#sv-arrow');
+          if (arrow) arrow.setAttribute('transform', `rotate(${h}, 24, 24)`);
+        });
+      } else {
+        container.innerHTML = '<div style="color:rgba(255,255,255,.6);padding:20px;text-align:center;font-size:13px">No Street View available within 80m of this parcel.</div>';
+      }
+    }
+  );
+}
+
+// ── Google Maps init ──────────────────────────────────────────────
+let map, dataLayer, infoWindow, currentFilter = 8000, activeItem = null, selectedMarker = null, svMarker = null;
+
+function initMap() {
+  window.map = map = new google.maps.Map(document.getElementById('map'), {
+    center: { lat: 38.2975, lng: -122.2869 },
+    zoom: 15,
+    mapTypeId: 'hybrid',
+    mapId: 'DEMO_MAP_ID',
+    mapTypeControlOptions: {
+      mapTypeIds: ['roadmap', 'satellite', 'hybrid', 'terrain'],
+      style: google.maps.MapTypeControlStyle.HORIZONTAL_BAR,
+      position: google.maps.ControlPosition.TOP_LEFT,
+    },
+    streetViewControl: true,
+    fullscreenControl: true,
+    gestureHandling: 'greedy',
+  });
+
+  infoWindow = new google.maps.InfoWindow();
+
+  dataLayer = new google.maps.Data({ map });
+  applyStyles();
+  map.addListener('idle', () => {
+    clearTimeout(fetchTimer);
+    fetchTimer = setTimeout(fetchViewport, 300);
+  });
+
+  dataLayer.addListener('mouseover', e => {
+    const sqft = e.feature.getProperty('_sqft') || 0;
+    if (sqft < currentFilter) return;
+    dataLayer.overrideStyle(e.feature, { fillOpacity: 0.75, strokeColor: '#1a1a2e', strokeWeight: 2.5 });
+  });
+  dataLayer.addListener('mouseout', e => dataLayer.revertStyle(e.feature));
+
+  dataLayer.addListener('click', e => {
+    const p = {};
+    e.feature.forEachProperty((v, k) => p[k] = v);
+    if ((p._sqft || 0) < currentFilter) return;
+
+    infoWindow.setContent(iwHtml(p));
+    infoWindow.setPosition(e.latLng);
+    infoWindow.open(map);
+
+    openPanel(p._lat, p._lng, p._address);
+
+    const idx = currentParcels.findIndex(x => x._address === p._address && x._county === p._county);
+    if (idx >= 0) highlightSidebarItem(idx);
+  });
+
+  // Search autocomplete
+  const searchInput = document.getElementById('search-input');
+  const autocomplete = new google.maps.places.Autocomplete(searchInput, {
+    fields: ['geometry', 'formatted_address'],
+    componentRestrictions: { country: 'us' },
+    bounds: new google.maps.LatLngBounds(
+      { lat: 38.0, lng: -123.6 }, { lat: 38.9, lng: -122.0 }
+    ),
+    strictBounds: false,
+  });
+  autocomplete.addListener('place_changed', () => {
+    const place = autocomplete.getPlace();
+    if (place.geometry?.location) {
+      map.panTo(place.geometry.location);
+      map.setZoom(18);
+    } else {
+      doSearch();
+    }
+  });
+
+  // Downtown marker
+  const starEl = document.createElement('div');
+  starEl.style.cssText = 'font-size:22px;line-height:1;cursor:default';
+  starEl.textContent = '⭐';
+  new google.maps.marker.AdvancedMarkerElement({
+    map,
+    position: { lat: 38.2975, lng: -122.2869 },
+    title: 'Downtown Napa center',
+    content: starEl,
+  });
+
+}
+
+function applyStyles() {
+  dataLayer.setStyle(feature => {
+    const sqft = feature.getProperty('_sqft') || 0;
+    return lotStyle(sqft, sqft >= currentFilter);
+  });
+}
+
+function iwHtml(p) {
+  const addr = p._address, county = p._county || '';
+  const mobile = window.innerWidth <= 600;
+  const links = `
+    <a href="${zillowUrl(addr,county)}"  target="_blank" style="background:#006aff;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;text-decoration:none;font-weight:500">Zillow</a>
+    <a href="${redfinUrl(addr,county)}"  target="_blank" style="background:#cc2c2c;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;text-decoration:none;font-weight:500">Redfin</a>
+    ${!mobile ? `<a href="${realtorUrl(addr,county)}" target="_blank" style="background:#d9232d;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;text-decoration:none;font-weight:500">Realtor</a>` : ''}
+    <a href="${googleUrl(addr,county)}"  target="_blank" style="background:#34a853;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;text-decoration:none;font-weight:500">Search</a>
+    ${!mobile && p._countyUrl ? `<a href="${p._countyUrl}" target="_blank" style="background:#555;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;text-decoration:none;font-weight:500">County</a>` : ''}`;
+
+  if (mobile) {
+    return `<div style="font-family:sans-serif;max-width:200px">
+      <div style="font-weight:700;font-size:13px;margin-bottom:3px">${addr}</div>
+      <div style="font-size:11px;color:#555;margin-bottom:6px">
+        ${fmt(Math.round(p._sqft||0))} sqft · ${p._acres||'—'} ac · ${county}
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap">${links}</div>
+    </div>`;
+  }
+  return `<div style="min-width:220px;max-width:270px;font-family:sans-serif">
+    <div style="font-weight:700;font-size:14px;margin-bottom:2px">${addr}</div>
+    <div style="font-size:11px;color:#888;margin-bottom:5px">${county} County</div>
+    <div style="font-size:12px;color:#444;line-height:1.6">
+      <b>${fmt(Math.round(p._sqft||0))}</b> sqft &nbsp;|&nbsp; <b>${p._acres||'—'}</b> acres<br>
+      Built: ${p._yearBuilt||'—'} &nbsp;|&nbsp; Beds: ${p._beds||'—'}<br>
+      House: ${fmt(Math.round(p._buildingSqft||0))} sqft<br>
+      Land value: ${dollar(p._landValue)}
+    </div>
+    <div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">${links}</div>
+  </div>`;
+}
+
+// ── Sidebar ───────────────────────────────────────────────────────
+function highlightSidebarItem(idx) {
+  if (activeItem) activeItem.classList.remove('active');
+  const el = document.querySelector(`.lot-item[data-index="${idx}"]`);
+  if (!el) return;
+  el.classList.add('active');
+  activeItem = el;
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function buildList(minSqft) {
+  currentFilter = minSqft;
+  const container = document.getElementById('list-container');
+  container.innerHTML = '';
+  let count = 0;
+
+  currentParcels.forEach((p, i) => {
+    const sqft = p._sqft || 0;
+    if (sqft < minSqft) return;
+    count++;
+    const addr = p._address, county = p._county || '';
+    const el = document.createElement('div');
+    el.className = 'lot-item';
+    el.dataset.index = i;
+    el.innerHTML = `
+      <div class="lot-addr">${addr}</div><span class="lot-sqft">${fmt(Math.round(sqft))} sf</span>
+      <div class="lot-meta">
+        ${fmt(Math.round(sqft))} sqft · ${p._acres||'?'} ac · ${p._dist} mi from ${county} downtown
+        ${p._yearBuilt ? ' · Built ' + p._yearBuilt : ''}
+        <span style="margin-left:4px;font-size:10px;background:#e8eaf6;padding:1px 5px;border-radius:3px">${county}</span>
+      </div>
+      <div class="lot-links">
+        <a href="${zillowUrl(addr,county)}"  target="_blank" style="background:#006aff">Zillow</a>
+        <a href="${redfinUrl(addr,county)}"  target="_blank" style="background:#cc2c2c">Redfin</a>
+        <a href="${realtorUrl(addr,county)}" target="_blank" style="background:#d9232d">Realtor</a>
+        <a href="${googleUrl(addr,county)}"  target="_blank" style="background:#34a853">Search</a>
+        ${p._countyUrl ? `<a href="${p._countyUrl}" target="_blank" style="background:#555">County</a>` : ''}
+      </div>`;
+    el.addEventListener('click', ev => {
+      if (ev.target.tagName === 'A') return;
+      if (map) { map.panTo({ lat: p._lat, lng: p._lng }); map.setZoom(18); }
+      placeMarker(p._lat, p._lng, addr);
+      if (activeItem) activeItem.classList.remove('active');
+      el.classList.add('active');
+      activeItem = el;
+      openPanel(p._lat, p._lng, addr);
+    });
+    container.appendChild(el);
+  });
+
+  document.getElementById('count-label').textContent = `${count} parcels shown`;
+  if (dataLayer) applyStyles();
+}
+
+const slider  = document.getElementById('min-sqft');
+const sqftVal = document.getElementById('sqft-val');
+slider.addEventListener('input', () => {
+  sqftVal.textContent = Number(slider.value).toLocaleString();
+  buildList(parseInt(slider.value));
+});
+
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  sidebar.classList.toggle('hidden');
+  const mobile = window.innerWidth <= 600;
+  const mr = (!mobile && !sidebar.classList.contains('hidden')) ? '340px' : '0';
+  document.getElementById('sv-panel').style.marginRight = mr;
+  document.getElementById('sv-resizer').style.marginRight = mr;
+}
+
+function doSearch() {
+  const query = document.getElementById('search-input').value.trim();
+  if (!query || !map) return;
+  new google.maps.Geocoder().geocode(
+    { address: query },
+    (results, status) => {
+      if (status === 'OK' && results[0]) {
+        map.panTo(results[0].geometry.location);
+        map.setZoom(18);
+      } else {
+        alert('Address not found — try including the city and state (e.g. "837 B Street, Petaluma, CA").');
+      }
+    }
+  );
+}
+
+
+
+// ── Resizable panel ───────────────────────────────────────────────
+(function() {
+  const resizer = document.getElementById('sv-resizer');
+  const panel   = document.getElementById('sv-panel');
+  let startY, startH;
+
+  resizer.addEventListener('mousedown', e => {
+    startY = e.clientY;
+    startH = panel.offsetHeight;
+    document.addEventListener('mousemove', onDrag);
+    document.addEventListener('mouseup',   onUp);
+    e.preventDefault();
+  });
+
+  function onDrag(e) {
+    const delta  = startY - e.clientY;   // drag up = bigger panel
+    const newH   = Math.max(120, Math.min(window.innerHeight * 0.8, startH + delta));
+    panel.style.height    = newH + 'px';
+    panel.style.transition = 'none';
+    document.getElementById('legend').style.bottom = (newH + 16) + 'px';
+    if (window.map) window.map.invalidateSize?.();
+  }
+
+  function onUp() {
+    panel.style.transition = '';
+    document.removeEventListener('mousemove', onDrag);
+    document.removeEventListener('mouseup',   onUp);
+  }
+})();
+
+</script>
+</body>
+</html>
