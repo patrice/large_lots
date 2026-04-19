@@ -122,6 +122,27 @@
     }
     #search-btn:hover { background: #2d2d50; }
 
+    /* ── Follow button ───────────────────────────────────────────── */
+    #follow-btn {
+      position: fixed; bottom: 16px; right: 12px; z-index: 1002;
+      background: #fff; border: none; border-radius: 50%;
+      width: 46px; height: 46px; font-size: 20px; cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0,0,0,.25); display: flex;
+      align-items: center; justify-content: center;
+      transition: background .2s, color .2s;
+    }
+    #follow-btn.active { background: #1a73e8; color: #fff; }
+    @keyframes me-pulse {
+      0%   { box-shadow: 0 0 0 0 rgba(26,115,232,.5), 0 2px 8px rgba(0,0,0,.3); }
+      70%  { box-shadow: 0 0 0 10px rgba(26,115,232,0), 0 2px 8px rgba(0,0,0,.3); }
+      100% { box-shadow: 0 0 0 0 rgba(26,115,232,0), 0 2px 8px rgba(0,0,0,.3); }
+    }
+    .me-dot {
+      width: 18px; height: 18px; border-radius: 50%;
+      background: #1a73e8; border: 3px solid #fff;
+      animation: me-pulse 2s infinite;
+    }
+
     /* ── Legend ───────────────────────────────────────────────────── */
     #legend {
       position: fixed; bottom: 16px; left: 12px; z-index: 999;
@@ -175,6 +196,8 @@
     <span>1k</span><span>8k</span><span>15k</span><span>23k</span><span>30k+ sqft</span>
   </div>
 </div>
+
+<button id="follow-btn" onclick="toggleFollow()" title="Follow my location">📍</button>
 
 <script>
 
@@ -600,6 +623,66 @@ slider.addEventListener('input', () => {
   sqftVal.textContent = Number(slider.value).toLocaleString();
   buildList(parseInt(slider.value));
 });
+
+// ── Follow me / GPS + compass ────────────────────────────────────
+let followActive = false, watchId = null, meMarker = null, orientHandler = null;
+
+async function toggleFollow() {
+  followActive ? stopFollow() : await startFollow();
+}
+
+async function startFollow() {
+  if (!navigator.geolocation) { alert('Geolocation not supported on this device.'); return; }
+
+  // iOS 13+ requires explicit permission for DeviceOrientationEvent
+  if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+    try {
+      const perm = await DeviceOrientationEvent.requestPermission();
+      if (perm !== 'granted') alert('Compass permission denied — location will still follow without rotation.');
+    } catch(e) {}
+  }
+
+  followActive = true;
+  const btn = document.getElementById('follow-btn');
+  btn.classList.add('active');
+  btn.textContent = '🔵';
+
+  // Pulsing "you are here" dot
+  const dot = document.createElement('div');
+  dot.className = 'me-dot';
+  meMarker = new google.maps.marker.AdvancedMarkerElement({
+    map, position: { lat: 0, lng: 0 }, title: 'You are here', content: dot,
+  });
+
+  watchId = navigator.geolocation.watchPosition(pos => {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    meMarker.position = { lat, lng };
+    map.panTo({ lat, lng });
+  }, err => {
+    alert('GPS error: ' + err.message);
+    stopFollow();
+  }, { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 });
+
+  // Compass: webkitCompassHeading on iOS, calculated from alpha on Android
+  orientHandler = e => {
+    const heading = e.webkitCompassHeading != null
+      ? e.webkitCompassHeading
+      : (e.absolute && e.alpha != null ? (360 - e.alpha) : null);
+    if (heading != null) map.setHeading(heading);
+  };
+  window.addEventListener('deviceorientation', orientHandler, true);
+}
+
+function stopFollow() {
+  followActive = false;
+  const btn = document.getElementById('follow-btn');
+  btn.classList.remove('active');
+  btn.textContent = '📍';
+  if (watchId != null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  if (meMarker) { meMarker.map = null; meMarker = null; }
+  if (orientHandler) { window.removeEventListener('deviceorientation', orientHandler, true); orientHandler = null; }
+  map.setHeading(0);
+}
 
 function toggleSidebar() {
   const sidebar = document.getElementById('sidebar');
