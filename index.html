@@ -185,6 +185,9 @@
   <div id="filter-bar">
     <label>Min lot size (sq ft): <strong id="sqft-val">8,000</strong></label>
     <input id="min-sqft" type="range" min="1000" max="50000" step="500" value="8000">
+    <label style="margin-top:8px;display:block">Min est. yard space: <strong id="yard-val">3,500</strong> sqft</label>
+    <input id="min-yard" type="range" min="0" max="15000" step="500" value="3500">
+    <div style="font-size:10px;color:#999;margin-top:4px">Yard = lot − house footprint (est.)</div>
   </div>
   <div id="list-container"></div>
 </div>
@@ -192,8 +195,11 @@
 <div id="legend">
   <h4>Lot Size</h4>
   <div style="height:13px;border-radius:3px;border:1px solid rgba(0,0,0,.12);background:linear-gradient(to right,hsla(220,65%,52%,0.2),hsl(165,75%,46%),hsl(90,85%,43%),hsl(45,92%,46%),hsl(0,95%,40%));margin-bottom:5px"></div>
-  <div style="display:flex;justify-content:space-between;font-size:10px;color:#555">
+  <div style="display:flex;justify-content:space-between;font-size:10px;color:#555;margin-bottom:6px">
     <span>1k</span><span>8k</span><span>15k</span><span>23k</span><span>30k+ sqft</span>
+  </div>
+  <div style="font-size:10px;color:#555;line-height:1.7">
+    🟢 Flat &nbsp; 🟡 Gentle &nbsp; 🟠 Moderate &nbsp; 🔴 Steep
   </div>
 </div>
 
@@ -219,6 +225,7 @@ const COUNTIES = [
       return {
         _address: (a.FullSitusAddress1 || '').trim(),
         _sqft: sqft, _acres: a.Acres,
+        _yard: Math.max(0, sqft - (a.Building_Size_SqFt || 0)),
         _landUse: a.LandUseDescription, _yearBuilt: a.YearBuilt,
         _beds: a.BedroomsCount, _buildingSqft: a.Building_Size_SqFt,
         _landValue: a.CurrentMarketLandValue, _parcelId: a.ASMT, _county: 'Napa',
@@ -242,6 +249,7 @@ const COUNTIES = [
       return {
         _address: (a.SitusFormatted1 || '').trim(),
         _sqft: sqft, _acres: a.LandSizeAcres,
+        _yard: Math.max(0, sqft - (a.BuildingPrimarySize || 0)),
         _landUse: a.UseCodeDescription, _yearBuilt: a.BuildingPrimaryYearBuilt,
         _beds: a.BuildingPrimaryBedRooms, _buildingSqft: a.BuildingPrimarySize,
         _landValue: a.Value601Land, _parcelId: a.APN, _county: 'Sonoma',
@@ -259,6 +267,7 @@ function haversine(lat1, lon1, lat2, lon2) {
 }
 
 let currentParcels = [], fetchTimer = null;
+let currentYardFilter = 3500;
 
 async function fetchCounty(county, geometry, minSqft) {
   const params = new URLSearchParams({
@@ -310,12 +319,68 @@ async function fetchViewport() {
     applyStyles();
 
     currentParcels = geojsonFeatures.map(f => f.properties)
-      .sort((a, b) => (b._sqft || 0) - (a._sqft || 0));
+      .sort((a, b) => (b._yard || b._sqft || 0) - (a._yard || a._sqft || 0));
     buildList(currentFilter);
+
+    fetchElevations(currentParcels).then(() => {
+      buildList(currentFilter);
+    }).catch(err => console.warn('Elevation fetch:', err));
   } catch (err) {
     document.getElementById('count-label').textContent = 'Fetch error — check console';
     console.error('fetchViewport:', err);
   }
+}
+
+// ── Elevation / slope ─────────────────────────────────────────────
+const ELEV_OFFSET = 0.00022; // ~24m in latitude degrees
+
+function slopeEmoji(slope) {
+  if (slope == null) return '⬜';
+  if (slope < 1.5) return '🟢';
+  if (slope < 4)   return '🟡';
+  if (slope < 8)   return '🟠';
+  return '🔴';
+}
+
+function slopeLabel(slope) {
+  if (slope == null) return 'slope unknown';
+  if (slope < 1.5) return 'flat';
+  if (slope < 4)   return 'gentle slope';
+  if (slope < 8)   return 'moderate slope';
+  return 'steep';
+}
+
+async function fetchElevations(parcels) {
+  if (!parcels.length || !google.maps.ElevationService) return;
+  const elevator = new google.maps.ElevationService();
+  // 3 points per parcel: centroid, N offset, S offset
+  const points = [];
+  parcels.forEach(p => {
+    points.push({ lat: p._lat, lng: p._lng });
+    points.push({ lat: p._lat + ELEV_OFFSET, lng: p._lng });
+    points.push({ lat: p._lat - ELEV_OFFSET, lng: p._lng });
+  });
+
+  const chunkSize = 510; // stay under 512 limit
+  const allResults = [];
+  for (let i = 0; i < points.length; i += chunkSize) {
+    const chunk = points.slice(i, i + chunkSize);
+    const results = await new Promise((resolve, reject) => {
+      elevator.getElevationForLocations({ locations: chunk }, (res, status) => {
+        if (status === 'OK') resolve(res || []);
+        else reject(new Error('ElevStatus: ' + status));
+      });
+    });
+    allResults.push(...results);
+  }
+
+  parcels.forEach((p, i) => {
+    const base = i * 3;
+    const e = [allResults[base], allResults[base + 1], allResults[base + 2]].filter(Boolean);
+    if (e.length < 2) { p._slope = null; return; }
+    const elevs = e.map(r => r.elevation);
+    p._slope = Math.max(...elevs) - Math.min(...elevs);
+  });
 }
 
 // ── URL helpers ───────────────────────────────────────────────────
@@ -527,7 +592,10 @@ function initMap() {
 function applyStyles() {
   dataLayer.setStyle(feature => {
     const sqft = feature.getProperty('_sqft') || 0;
-    return lotStyle(sqft, sqft >= currentFilter);
+    const yard = feature.getProperty('_yard');
+    const effectiveYard = (yard != null) ? yard : sqft;
+    const visible = sqft >= currentFilter && effectiveYard >= currentYardFilter;
+    return lotStyle(sqft, visible);
   });
 }
 
@@ -541,11 +609,17 @@ function iwHtml(p) {
     <a href="${googleUrl(addr,county)}"  target="_blank" style="background:#34a853;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;text-decoration:none;font-weight:500">Search</a>
     ${!mobile && p._countyUrl ? `<a href="${p._countyUrl}" target="_blank" style="background:#555;color:#fff;font-size:11px;padding:3px 8px;border-radius:4px;text-decoration:none;font-weight:500">County</a>` : ''}`;
 
+  const yard = (p._yard != null) ? p._yard : (p._sqft || 0);
+  const slope = slopeEmoji(p._slope);
+
   if (mobile) {
-    return `<div style="font-family:sans-serif;max-width:200px">
+    return `<div style="font-family:sans-serif;max-width:210px">
       <div style="font-weight:700;font-size:13px;margin-bottom:3px">${addr}</div>
+      <div style="font-size:11px;color:#555;margin-bottom:2px">
+        ${fmt(Math.round(p._sqft||0))} sqft lot · ${county}
+      </div>
       <div style="font-size:11px;color:#555;margin-bottom:6px">
-        ${fmt(Math.round(p._sqft||0))} sqft · ${p._acres||'—'} ac · ${county}
+        ~${fmt(Math.round(yard))} sqft yard ${slope} ${slopeLabel(p._slope)}
       </div>
       <div style="display:flex;gap:5px;flex-wrap:wrap">${links}</div>
     </div>`;
@@ -557,6 +631,8 @@ function iwHtml(p) {
       <b>${fmt(Math.round(p._sqft||0))}</b> sqft &nbsp;|&nbsp; <b>${p._acres||'—'}</b> acres<br>
       Built: ${p._yearBuilt||'—'} &nbsp;|&nbsp; Beds: ${p._beds||'—'}<br>
       House: ${fmt(Math.round(p._buildingSqft||0))} sqft<br>
+      <b>Est. yard: ~${fmt(Math.round(yard))} sqft</b><br>
+      Terrain: ${slope} ${slopeLabel(p._slope)}<br>
       Land value: ${dollar(p._landValue)}
     </div>
     <div style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap">${links}</div>
@@ -582,16 +658,22 @@ function buildList(minSqft) {
   currentParcels.forEach((p, i) => {
     const sqft = p._sqft || 0;
     if (sqft < minSqft) return;
+    const yard = (p._yard != null) ? p._yard : sqft;
+    if (yard < currentYardFilter) return;
     count++;
     const addr = p._address, county = p._county || '';
+    const slope = slopeEmoji(p._slope);
     const el = document.createElement('div');
     el.className = 'lot-item';
     el.dataset.index = i;
     el.innerHTML = `
-      <div class="lot-addr">${addr}</div><span class="lot-sqft">${fmt(Math.round(sqft))} sf</span>
+      <div class="lot-addr">${addr}</div>
+      <span class="lot-sqft">${fmt(Math.round(sqft))} sf · ${fmt(Math.round(yard))} yd ${slope}</span>
       <div class="lot-meta">
-        ${fmt(Math.round(sqft))} sqft · ${p._acres||'?'} ac · ${p._dist} mi from ${county} downtown
+        ${fmt(Math.round(sqft))} sqft lot · ~${fmt(Math.round(yard))} sqft yard
+        · ${p._dist} mi from ${county} downtown
         ${p._yearBuilt ? ' · Built ' + p._yearBuilt : ''}
+        ${p._slope != null ? ` · ${slope} ${slopeLabel(p._slope)}` : ''}
         <span style="margin-left:4px;font-size:10px;background:#e8eaf6;padding:1px 5px;border-radius:3px">${county}</span>
       </div>
       <div class="lot-links">
@@ -622,6 +704,14 @@ const sqftVal = document.getElementById('sqft-val');
 slider.addEventListener('input', () => {
   sqftVal.textContent = Number(slider.value).toLocaleString();
   buildList(parseInt(slider.value));
+});
+
+const yardSlider = document.getElementById('min-yard');
+const yardVal    = document.getElementById('yard-val');
+yardSlider.addEventListener('input', () => {
+  currentYardFilter = parseInt(yardSlider.value);
+  yardVal.textContent = Number(currentYardFilter).toLocaleString();
+  buildList(currentFilter);
 });
 
 // ── Follow me / GPS + compass ────────────────────────────────────
